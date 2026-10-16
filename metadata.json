@@ -1,0 +1,6 @@
+{
+  "name": "StudyOS - AI-Powered Student Operating System",
+  "description": "An intelligent student productivity and learning platform combining study planning, AI-generated notes, interactive quizzes, spaced repetition revision, and performance analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
