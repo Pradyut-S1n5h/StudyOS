@@ -26,6 +26,7 @@ import {
 } from '../../types';
 import { storage } from '../../services/storage';
 import { StudyIntelligenceEngine } from '../../services/intelligence';
+import { localDateString } from '../../services/dates';
 
 interface DashboardViewProps {
   onNavigate: (tab: string, params?: any) => void;
@@ -93,7 +94,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   };
 
   // Metrics
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = localDateString();
   const todayMinutes = sessions
     .filter((s) => s.date === todayStr)
     .reduce((acc, curr) => acc + curr.durationMinutes, 0);
@@ -112,7 +113,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const last7Days = Array.from({ length: 7 }, (_, i) => {
     const d = new Date();
     d.setDate(d.getDate() - (6 - i));
-    const dateStr = d.toISOString().split('T')[0];
+    const dateStr = localDateString(d);
     const dayName = d.toLocaleDateString('en-US', { weekday: 'short' });
     const mins = sessions
       .filter((s) => s.date === dateStr)

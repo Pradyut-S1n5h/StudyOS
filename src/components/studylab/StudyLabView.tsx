@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Sparkles,
   BookOpen,
@@ -29,7 +29,7 @@ import {
   QuestionAnswerRecord,
 } from '../../types';
 import { storage } from '../../services/storage';
-import { api, GeneratedNotesResponse, ExplainResponse, GroundedAskResponse } from '../../services/api';
+import { api, GeneratedNotesResponse, ExplainResponse, GroundedAskResponse, EvaluateAnswerResponse } from '../../services/api';
 
 interface StudyLabViewProps {
   initialMaterialId?: string;
@@ -57,6 +57,7 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
   const [generatedNotes, setGeneratedNotes] = useState<GeneratedNotesResponse | null>(null);
   const [copiedNotes, setCopiedNotes] = useState(false);
   const [savedNotesMessage, setSavedNotesMessage] = useState<string | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
 
   // 2. Explanation Mode state
   const [explainConcept, setExplainConcept] = useState(initialConcept || 'Photolysis & PSII');
@@ -69,9 +70,7 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
   // 3. Grounded Q&A state
   const [qaQuestion, setQaQuestion] = useState('');
   const [isAnsweringQa, setIsAnsweringQa] = useState(false);
-  const [qaHistory, setQaHistory] = useState<
-    { question: string; answer: string; groundedInMaterial: boolean }[]
-  >([]);
+  const [qaHistory, setQaHistory] = useState<(GroundedAskResponse & { question: string; sourceTitle: string })[]>([]);
 
   // 4. Quiz Generator & Taking state
   const [quizCount, setQuizCount] = useState<number>(4);
@@ -85,9 +84,7 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
   const [userSelectedOptions, setUserSelectedOptions] = useState<Record<string, number>>({});
   const [userTextAnswers, setUserTextAnswers] = useState<Record<string, string>>({});
   const [evaluatingShortAnswer, setEvaluatingShortAnswer] = useState<string | null>(null);
-  const [shortAnswerEvaluations, setShortAnswerEvaluations] = useState<
-    Record<string, { score: number; isCorrect: boolean; feedback: string }>
-  >({});
+  const [shortAnswerEvaluations, setShortAnswerEvaluations] = useState<Record<string, EvaluateAnswerResponse>>({});
   const [quizSubmitted, setQuizSubmitted] = useState(false);
   const [quizResultSummary, setQuizResultSummary] = useState<{
     score: number;
@@ -95,6 +92,7 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
     percentage: number;
   } | null>(null);
   const [quizStartTime, setQuizStartTime] = useState<number>(Date.now());
+  const submissionInProgress = useRef(false);
 
   // Load materials & subjects
   const loadData = () => {
@@ -131,6 +129,7 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
   // 1. Generate Notes
   const handleGenerateNotes = async () => {
     if (!currentMaterial) return;
+    setAiError(null);
     setIsGeneratingNotes(true);
     setGeneratedNotes(null);
     try {
@@ -140,8 +139,8 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
         notesStyle
       );
       setGeneratedNotes(res);
-    } catch (err: any) {
-      console.error(err);
+    } catch (err: unknown) {
+      setAiError(err instanceof Error ? err.message : 'Notes could not be generated. Please retry.');
     } finally {
       setIsGeneratingNotes(false);
     }
@@ -172,6 +171,7 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
   // 2. Explain Concept
   const handleExplain = async () => {
     if (!explainConcept.trim()) return;
+    setAiError(null);
     setIsExplaining(true);
     try {
       const res = await api.explainConcept(
@@ -180,8 +180,8 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
         explainDepth
       );
       setExplanationResult(res);
-    } catch (err: any) {
-      console.error(err);
+    } catch (err: unknown) {
+      setAiError(err instanceof Error ? err.message : 'The explanation could not be generated. Please retry.');
     } finally {
       setIsExplaining(false);
     }
@@ -192,21 +192,15 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
     e.preventDefault();
     if (!qaQuestion.trim()) return;
     const q = qaQuestion.trim();
-    setQaQuestion('');
+    setAiError(null);
     setIsAnsweringQa(true);
 
     try {
       const res = await api.askQuestion(currentMaterial?.content || '', q);
-      setQaHistory((prev) => [
-        {
-          question: q,
-          answer: res.answer,
-          groundedInMaterial: res.groundedInMaterial,
-        },
-        ...prev,
-      ]);
-    } catch (err: any) {
-      console.error(err);
+      setQaHistory((prev) => [{ ...res, question: q, sourceTitle: currentMaterial?.title || 'Active material' }, ...prev]);
+      setQaQuestion('');
+    } catch (err: unknown) {
+      setAiError(err instanceof Error ? err.message : 'The question could not be answered. Please retry.');
     } finally {
       setIsAnsweringQa(false);
     }
@@ -215,6 +209,8 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
   // 4. Generate Quiz
   const handleGenerateQuiz = async () => {
     if (!currentMaterial) return;
+    submissionInProgress.current = false;
+    setAiError(null);
     setIsGeneratingQuiz(true);
     setActiveQuiz(null);
     setQuizSubmitted(false);
@@ -229,12 +225,13 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
         currentMaterial.title,
         quizCount,
         quizDifficulty,
-        includeShortAnswer
+        includeShortAnswer,
+        initialConcept
       );
       setActiveQuiz(res);
       setQuizStartTime(Date.now());
-    } catch (err: any) {
-      console.error(err);
+    } catch (err: unknown) {
+      setAiError(err instanceof Error ? err.message : 'The quiz could not be generated. Please retry.');
     } finally {
       setIsGeneratingQuiz(false);
     }
@@ -245,6 +242,7 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
     const studentAns = userTextAnswers[q.id];
     if (!studentAns || !studentAns.trim()) return;
 
+    setAiError(null);
     setEvaluatingShortAnswer(q.id);
     try {
       const res = await api.evaluateAnswer(
@@ -257,8 +255,8 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
         ...prev,
         [q.id]: res,
       }));
-    } catch (err: any) {
-      console.error(err);
+    } catch (err: unknown) {
+      setAiError(err instanceof Error ? err.message : 'The answer could not be graded. Please retry.');
     } finally {
       setEvaluatingShortAnswer(null);
     }
@@ -266,12 +264,25 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
 
   // Submit Quiz Attempt
   const handleSubmitQuiz = async () => {
-    if (!activeQuiz || !currentMaterial) return;
+    if (!activeQuiz || !currentMaterial || submissionInProgress.current) return;
+    setAiError(null);
+    submissionInProgress.current = true;
 
-    // Evaluate short answers that haven't been evaluated yet
+    const unanswered = activeQuiz.questions.some((q) =>
+      q.type === 'mcq'
+        ? userSelectedOptions[q.id] === undefined
+        : !userTextAnswers[q.id]?.trim()
+    );
+    if (unanswered) {
+      setAiError('Answer every question before submitting. No attempt has been recorded.');
+      submissionInProgress.current = false;
+      return;
+    }
+
+    const evaluations = { ...shortAnswerEvaluations };
     for (const q of activeQuiz.questions) {
-      if (q.type === 'short_answer' && !shortAnswerEvaluations[q.id]) {
-        const studentAns = userTextAnswers[q.id] || '';
+      if (q.type === 'short_answer' && !evaluations[q.id]) {
+        const studentAns = userTextAnswers[q.id];
         try {
           const evalRes = await api.evaluateAnswer(
             q.question,
@@ -279,16 +290,16 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
             studentAns,
             q.concept
           );
-          shortAnswerEvaluations[q.id] = evalRes;
-        } catch {
-          shortAnswerEvaluations[q.id] = {
-            score: 70,
-            isCorrect: true,
-            feedback: 'Evaluated successfully.',
-          };
+          evaluations[q.id] = evalRes;
+        } catch (err: unknown) {
+          setShortAnswerEvaluations(evaluations);
+          setAiError(`${err instanceof Error ? err.message : 'Answer grading failed.'} No quiz attempt has been recorded. Retry submission to try grading again.`);
+          submissionInProgress.current = false;
+          return;
         }
       }
     }
+    setShortAnswerEvaluations(evaluations);
 
     // Build answers records
     let correctCount = 0;
@@ -307,7 +318,7 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
           ? 'Correct! You understood the key mechanism.'
           : `Incorrect. The correct answer is: ${q.options[q.correctAnswer]}`;
       } else {
-        const evaluation = shortAnswerEvaluations[q.id];
+        const evaluation = evaluations[q.id];
         isCorrect = evaluation ? evaluation.isCorrect : false;
         score = evaluation ? evaluation.score : 0;
         feedback = evaluation?.feedback || '';
@@ -346,6 +357,7 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
       quizId: activeQuiz.id || `quiz-${Date.now()}`,
       quizTitle: activeQuiz.title,
       materialId: currentMaterial.id,
+      chapterId: currentMaterial.chapterId,
       subjectId: currentMaterial.subjectId,
       score: correctCount,
       totalQuestions: total,
@@ -361,6 +373,7 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
       percentage,
     });
     setQuizSubmitted(true);
+    setAiError(null);
 
     // Confetti celebration if scored >= 75%
     if (percentage >= 75) {
@@ -390,7 +403,16 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
           </label>
           <select
             value={selectedMaterialId}
-            onChange={(e) => setSelectedMaterialId(e.target.value)}
+            onChange={(e) => {
+              setSelectedMaterialId(e.target.value);
+              setActiveQuiz(null);
+              setQuizSubmitted(false);
+              setQuizResultSummary(null);
+              setUserSelectedOptions({});
+              setUserTextAnswers({});
+              setShortAnswerEvaluations({});
+            }}
+            disabled={!!activeQuiz && !quizSubmitted}
             className="text-xs rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-cyan-300 font-medium focus:outline-hidden focus:border-cyan-500 max-w-xs truncate"
           >
             {materials.map((m) => {
@@ -432,8 +454,15 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
                 </span>
               </div>
               <span className="text-[11px] text-cyan-400 font-medium hidden sm:inline">
-                Source Grounded
+                Active Source Material
               </span>
+            </div>
+          )}
+
+          {aiError && (
+            <div role="alert" aria-live="assertive" className="flex items-start gap-2 rounded-xl border border-rose-800 bg-rose-950/40 px-4 py-3 text-xs text-rose-200">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <p>{aiError} Use the action above to retry; failed grading is never recorded.</p>
             </div>
           )}
 
@@ -928,6 +957,15 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
                                   <p className="text-slate-300">
                                     {shortAnswerEvaluations[q.id].feedback}
                                   </p>
+                                  {[
+                                    ['Understood', shortAnswerEvaluations[q.id].understood],
+                                    ['Missing', shortAnswerEvaluations[q.id].missing],
+                                    ['Review', shortAnswerEvaluations[q.id].review],
+                                  ].map(([label, items]) => Array.isArray(items) && items.length > 0 && (
+                                    <p key={label as string} className="text-[11px] text-slate-400">
+                                      <span className="font-semibold text-slate-300">{label as string}:</span> {items.join('; ')}
+                                    </p>
+                                  ))}
                                   {q.expectedAnswer && (
                                     <p className="text-[11px] text-slate-400 pt-1">
                                       <span className="font-semibold text-slate-300">Expected:</span>{' '}
@@ -956,7 +994,11 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
                     <div className="pt-4 border-t border-slate-800 flex justify-end">
                       <button
                         onClick={handleSubmitQuiz}
-                        disabled={Object.keys(userSelectedOptions).length === 0}
+                        disabled={activeQuiz.questions.some((q) =>
+                          q.type === 'mcq'
+                            ? userSelectedOptions[q.id] === undefined
+                            : !userTextAnswers[q.id]?.trim()
+                        )}
                         className="flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white font-bold text-xs shadow-lg shadow-emerald-600/25 transition-all disabled:opacity-40"
                       >
                         <Check className="w-4 h-4" />
@@ -1014,6 +1056,7 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
                           <HelpCircle className="w-3.5 h-3.5 text-cyan-400" />
                           <span>{item.question}</span>
                         </div>
+                        <p className="pl-5 text-[10px] text-slate-500">Source material: {item.sourceTitle}</p>
                         <div className="text-slate-200 leading-relaxed pl-5 whitespace-pre-wrap">
                           {item.answer}
                         </div>
@@ -1025,9 +1068,21 @@ export const StudyLabView: React.FC<StudyLabViewProps> = ({
                                 : 'bg-amber-950 text-amber-300 border border-amber-800/40'
                             }`}
                           >
-                            {item.groundedInMaterial ? 'Grounded in Source Text' : 'General Academic Context'}
+                            {item.groundedInMaterial ? 'Grounded in Source Text' : 'Not found in source material'}
                           </span>
                         </div>
+                        {item.sources.map((source) => (
+                          <blockquote key={source.id} className="ml-5 border-l-2 border-emerald-700 pl-3 text-[11px] text-slate-400">
+                            <span className="font-semibold text-emerald-300">Source {source.id}, characters {source.start}-{source.end}:</span>{' '}
+                            {source.quote}
+                          </blockquote>
+                        ))}
+                        {item.generalContext && (
+                          <p className="ml-5 text-[11px] text-amber-200">
+                            <span className="font-semibold">General academic context, not supported by this source:</span>{' '}
+                            {item.generalContext}
+                          </p>
+                        )}
                       </div>
                     ))
                   )}

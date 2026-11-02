@@ -6,12 +6,15 @@ import {
   RotateCcw,
   CheckCircle,
   Database,
+  Download,
   Flame,
+  Upload,
   Menu,
   X,
   Target,
 } from 'lucide-react';
 import { storage } from '../../services/storage';
+import { localDateString } from '../../services/dates';
 
 interface NavbarProps {
   currentTab: string;
@@ -35,6 +38,10 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [sessions, setSessions] = useState(() => storage.getSessions());
   const [goal, setGoal] = useState(() => storage.getGoal());
   const [showDataModal, setShowDataModal] = useState(false);
+  const [importPayload, setImportPayload] = useState<string | null>(null);
+  const [importFileName, setImportFileName] = useState('');
+  const [dataMessage, setDataMessage] = useState<string | null>(null);
+  const [dataError, setDataError] = useState<string | null>(null);
 
   useEffect(() => {
     const handleUpdate = () => {
@@ -45,7 +52,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     return () => window.removeEventListener('studyos_storage_change', handleUpdate);
   }, []);
 
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = localDateString();
   const todayMinutes = sessions
     .filter((s) => s.date === todayStr)
     .reduce((acc, curr) => acc + curr.durationMinutes, 0);
@@ -68,6 +75,53 @@ export const Navbar: React.FC<NavbarProps> = ({
       storage.clearAllData();
       setShowDataModal(false);
     }
+  };
+
+  const handleExportData = () => {
+    const backup = new Blob([JSON.stringify(storage.exportAll(), null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(backup);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `studyos-backup-${localDateString()}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    setDataMessage('Backup exported.');
+    setDataError(null);
+  };
+
+  const handleSelectImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    setDataMessage(null);
+    setDataError(null);
+    setImportPayload(null);
+    if (!file) return;
+    if (file.size > 5_000_000) {
+      setDataError('Backup files must be 5 MB or smaller.');
+      return;
+    }
+    try {
+      setImportPayload(await file.text());
+      setImportFileName(file.name);
+    } catch {
+      setDataError('The selected backup could not be read.');
+    }
+  };
+
+  const handleImportData = (mode: 'merge' | 'replace') => {
+    if (!importPayload) return;
+    if (mode === 'replace' && !confirm('Replace all current StudyOS data with this backup? This cannot be undone.')) return;
+    const result = storage.importAll(importPayload, mode);
+    if (!result.success) {
+      setDataError(result.error || 'The backup could not be imported.');
+      setDataMessage(null);
+      return;
+    }
+    setDataMessage(mode === 'merge'
+      ? `Imported ${importFileName}. Existing IDs were preserved (${result.preservedRecords || 0} matching records)${result.preservedGoal ? '; your current goal settings were kept' : ''}.`
+      : `Replaced current data with ${importFileName}.`);
+    setDataError(null);
+    setImportPayload(null);
   };
 
   return (
@@ -153,7 +207,11 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {/* Data Manager (Load sample vs Fresh) */}
           <button
-            onClick={() => setShowDataModal(true)}
+            onClick={() => {
+              setDataMessage(null);
+              setDataError(null);
+              setShowDataModal(true);
+            }}
             className="p-2 rounded-lg text-slate-400 hover:text-slate-200 bg-slate-900 border border-slate-800 hover:border-slate-700"
             title="Data & Sample Curriculum"
           >
@@ -185,6 +243,27 @@ export const Navbar: React.FC<NavbarProps> = ({
 
             <div className="mt-5 space-y-3">
               <button
+                onClick={handleExportData}
+                className="w-full flex items-center gap-2 p-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm font-medium text-slate-100"
+              >
+                <Download className="h-4 w-4 text-cyan-400" /> Export JSON Backup
+              </button>
+              <label className="w-full flex items-center gap-2 p-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm font-medium text-slate-100 cursor-pointer">
+                <Upload className="h-4 w-4 text-cyan-400" /> Import JSON Backup
+                <input type="file" accept=".json,application/json" onChange={handleSelectImport} className="sr-only" />
+              </label>
+              {dataMessage && <p role="status" className="text-xs text-emerald-300">{dataMessage}</p>}
+              {dataError && <p role="alert" className="text-xs text-rose-300">{dataError}</p>}
+              {importPayload && (
+                <div className="rounded-xl border border-cyan-900 bg-cyan-950/30 p-3 space-y-2">
+                  <p className="text-xs text-slate-200">Ready to import {importFileName}.</p>
+                  <div className="flex gap-2">
+                    <button onClick={() => handleImportData('merge')} className="flex-1 rounded-lg bg-cyan-700 px-3 py-2 text-xs font-semibold text-white hover:bg-cyan-600">Merge new IDs</button>
+                    <button onClick={() => handleImportData('replace')} className="flex-1 rounded-lg bg-rose-900 px-3 py-2 text-xs font-semibold text-rose-100 hover:bg-rose-800">Replace all data</button>
+                  </div>
+                </div>
+              )}
+              <button
                 onClick={handleResetDefaults}
                 className="w-full flex items-center justify-between p-3.5 rounded-xl bg-slate-800/80 hover:bg-slate-800 border border-slate-700 text-left transition-all group"
               >
@@ -194,7 +273,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     Load Sample Curriculum
                   </div>
                   <div className="text-xs text-slate-400 mt-0.5">
-                    Includes AP Biology (Photosynthesis), CS (Big-O), real quiz attempts, and spaced repetition queue.
+                    Includes sample AP Biology and CS materials, quiz attempts, and revision history.
                   </div>
                 </div>
               </button>

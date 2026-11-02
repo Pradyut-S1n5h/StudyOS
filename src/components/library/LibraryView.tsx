@@ -54,6 +54,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   const [materialTitle, setMaterialTitle] = useState('');
   const [materialContent, setMaterialContent] = useState('');
   const [materialChapterId, setMaterialChapterId] = useState('');
+  const [materialSourceType, setMaterialSourceType] = useState<StudyMaterial['sourceType']>('pasted');
+  const [materialFileName, setMaterialFileName] = useState<string | undefined>();
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isProcessingFile, setIsProcessingFile] = useState(false);
 
@@ -153,19 +155,32 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   const handleCreateMaterial = (e: React.FormEvent) => {
     e.preventDefault();
     if (!materialTitle.trim() || !materialContent.trim() || !selectedSubjectId) return;
+    const duplicate = storage.getMaterials().some((material) =>
+      material.subjectId === selectedSubjectId &&
+      material.chapterId === (materialChapterId || undefined) &&
+      material.content.trim() === materialContent.trim()
+    );
+    if (duplicate) {
+      setUploadError('This material is already saved in the selected chapter.');
+      return;
+    }
 
     const newMat = storage.addMaterial({
       subjectId: selectedSubjectId,
       chapterId: materialChapterId || undefined,
       title: materialTitle.trim(),
       content: materialContent.trim(),
-      sourceType: 'pasted',
+      sourceType: materialSourceType,
+      fileName: materialFileName,
     });
 
     setSelectedMaterial(newMat);
     setMaterialTitle('');
     setMaterialContent('');
     setMaterialChapterId('');
+    setMaterialSourceType('pasted');
+    setMaterialFileName(undefined);
+    setUploadError(null);
     setShowMaterialModal(false);
   };
 
@@ -188,34 +203,59 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     try {
       const fileName = file.name;
       const extension = fileName.split('.').pop()?.toLowerCase();
+      if (file.size === 0) throw new Error('The selected file is empty.');
+      if (file.size > 25_000_000) throw new Error('Files must be 25 MB or smaller.');
 
-      if (extension === 'txt' || extension === 'md' || extension === 'json' || extension === 'csv') {
+      let text = '';
+      if (extension === 'txt' || extension === 'md') {
         const text = await file.text();
-        setMaterialTitle(fileName.replace(/\.[^/.]+$/, ''));
+        if (!text.trim()) throw new Error('The selected file contains no text.');
+        if (text.length > 250_000) throw new Error('Text files must contain 250,000 characters or fewer. Split this document into sections first.');
         setMaterialContent(text);
+        setMaterialSourceType('uploaded_text');
       } else if (extension === 'pdf') {
-        // PDF text extraction handling
-        // Attempt basic text slice or inform user gracefully
-        const buffer = await file.arrayBuffer();
-        const decoder = new TextDecoder('utf-8', { fatal: false });
-        const raw = decoder.decode(buffer);
-        // Extract printable strings
-        const cleaned = raw.replace(/[^\x20-\x7E\t\n\r]/g, ' ');
-        const matches = cleaned.match(/[A-Za-z0-9\s.,;:'"()\-?!]{15,}/g);
-
-        if (matches && matches.join(' ').length > 200) {
-          setMaterialTitle(fileName.replace(/\.[^/.]+$/, ''));
-          setMaterialContent(matches.join('\n\n').slice(0, 15000));
-        } else {
-          setUploadError(
-            'The selected PDF appears scanned or encrypted. For optimal accuracy, please copy and paste the chapter text directly.'
-          );
+        const [pdfjs, pdfWorker] = await Promise.all([
+          import('pdfjs-dist'),
+          import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
+        ]);
+        pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker.default;
+        const loadingTask = pdfjs.getDocument({ data: await file.arrayBuffer() });
+        const document = await loadingTask.promise;
+        if (document.numPages > 200) {
+          await loadingTask.destroy();
+          throw new Error('PDFs must contain 200 pages or fewer. Split this document into sections first.');
         }
+        const pages: string[] = [];
+        let extractedLength = 0;
+        for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
+          const page = await document.getPage(pageNumber);
+          const pageText = await page.getTextContent();
+          const text = pageText.items
+            .filter((item) => 'str' in item)
+            .map((item) => 'str' in item ? item.str : '')
+            .join(' ')
+            .trim();
+          if (text) pages.push(text);
+          extractedLength += text.length;
+          if (extractedLength > 250_000) {
+            await loadingTask.destroy();
+            throw new Error('PDF text exceeds 250,000 characters. Split this document into sections first.');
+          }
+        }
+        await loadingTask.destroy();
+        text = pages.join('\n\n');
+        if (!text.trim()) {
+          throw new Error('No selectable text was found. Scanned/image-only PDFs are not supported; paste or upload an OCR text transcription instead.');
+        }
+        setMaterialContent(text);
+        setMaterialSourceType('uploaded_pdf');
       } else {
-        setUploadError(`File type ".${extension}" is unsupported. Please upload .txt, .md, or paste text.`);
+        throw new Error(`File type ".${extension || 'unknown'}" is unsupported. Upload a .txt, .md, or text-based .pdf file.`);
       }
+      setMaterialTitle(fileName.replace(/\.[^/.]+$/, ''));
+      setMaterialFileName(fileName);
     } catch (err: any) {
-      setUploadError(`Error reading document: ${err.message}`);
+      setUploadError(`Document processing failed: ${err instanceof Error ? err.message : 'Unknown extraction error'}`);
     } finally {
       setIsProcessingFile(false);
     }
@@ -658,7 +698,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               <input
                 type="file"
                 id="docUpload"
-                accept=".txt,.md,.pdf"
+                accept=".txt,.md,.pdf,text/plain,text/markdown,application/pdf"
                 onChange={handleFileUpload}
                 className="hidden"
               />

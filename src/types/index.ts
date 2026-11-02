@@ -113,6 +113,7 @@ export interface QuizAttempt {
   quizId: string;
   quizTitle: string;
   materialId?: string;
+  chapterId?: string;
   subjectId: string;
   score: number; // e.g. 4
   totalQuestions: number;
@@ -141,13 +142,17 @@ export interface Flashcard {
 export interface SpacedTopic {
   concept: string;
   subjectId: string;
+  chapterId?: string;
   subjectName: string;
   totalAttempts: number;
+  sessionsCount: number;
+  successfulSessionsCount: number;
   correctAttempts: number;
   accuracy: number;
   lastTestedAt: string;
   nextReviewDate: string;
-  status: 'overdue' | 'due_today' | 'upcoming' | 'mastered';
+  status: 'overdue' | 'due_today' | 'upcoming';
+  masteryStatus: 'unverified' | 'developing' | 'practicing' | 'mastered';
   missedQuestionsCount: number;
 }
 

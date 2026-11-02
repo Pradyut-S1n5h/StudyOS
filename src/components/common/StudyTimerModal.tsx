@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Play, Pause, RotateCcw, X, Check, Timer, Sparkles } from 'lucide-react';
 import { storage } from '../../services/storage';
 import { Subject } from '../../types';
@@ -30,6 +30,7 @@ export const StudyTimerModal: React.FC<StudyTimerModalProps> = ({
   >('reading');
   const [notes, setNotes] = useState('');
   const [completedMessage, setCompletedMessage] = useState<string | null>(null);
+  const sessionLogged = useRef(false);
 
   // Sync selectedSubject if empty
   useEffect(() => {
@@ -53,15 +54,19 @@ export const StudyTimerModal: React.FC<StudyTimerModalProps> = ({
   };
 
   const handleToggleTimer = () => {
+    if (!isTimerRunning && timerSeconds === 0) sessionLogged.current = false;
     setIsTimerRunning(!isTimerRunning);
   };
 
   const handleReset = () => {
     setIsTimerRunning(false);
     setTimerSeconds(0);
+    sessionLogged.current = false;
   };
 
   const handleSaveSession = () => {
+    if (sessionLogged.current) return;
+    sessionLogged.current = true;
     const minutes = Math.max(1, Math.round(timerSeconds / 60));
     storage.addSession({
       subjectId: selectedSubjectId || (subjects[0]?.id ?? 'general'),

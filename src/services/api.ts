@@ -17,7 +17,8 @@ export interface ExplainResponse {
 export interface GroundedAskResponse {
   answer: string;
   groundedInMaterial: boolean;
-  sourceExcerpt?: string;
+  generalContext?: string;
+  sources: { id: string; start: number; end: number; quote: string }[];
 }
 
 export interface EvaluateAnswerResponse {
@@ -25,15 +26,10 @@ export interface EvaluateAnswerResponse {
   isCorrect: boolean;
   feedback: string;
   expectedAnswer: string;
-}
-
-export interface SmartPlanResponse {
-  scheduleAdvice: string;
-  suggestedBlocks: {
-    time: string;
-    activity: string;
-    focusType: 'task' | 'revision' | 'quiz' | 'flashcards';
-  }[];
+  understood: string[];
+  missing: string[];
+  review: string[];
+  evaluationMethod: 'ai' | 'deterministic';
 }
 
 class ApiService {
@@ -52,8 +48,8 @@ class ApiService {
       });
 
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Server returned ${response.status}: ${errorText || response.statusText}`);
+        const errorBody = await response.json().catch(() => null);
+        throw new Error(errorBody?.error || `Request failed (${response.status}). Please retry.`);
       }
 
       return (await response.json()) as T;
@@ -115,7 +111,8 @@ class ApiService {
     topicTitle: string,
     questionCount: number = 4,
     difficulty: 'easy' | 'medium' | 'hard' = 'medium',
-    includeShortAnswer: boolean = false
+    includeShortAnswer: boolean = false,
+    targetConcept?: string
   ): Promise<Quiz> {
     return this.post<Quiz>('/api/ai/quiz', {
       materialContent,
@@ -123,6 +120,7 @@ class ApiService {
       questionCount,
       difficulty,
       includeShortAnswer,
+      targetConcept,
     });
   }
 
@@ -140,19 +138,6 @@ class ApiService {
     });
   }
 
-  async generateSmartPlan(
-    tasks: any[],
-    weakTopics: any[],
-    availableHoursPerDay: number,
-    studyGoal: any
-  ): Promise<SmartPlanResponse> {
-    return this.post<SmartPlanResponse>('/api/ai/smart-plan', {
-      tasks,
-      weakTopics,
-      availableHoursPerDay,
-      studyGoal,
-    });
-  }
 }
 
 export const api = new ApiService();

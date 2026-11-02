@@ -52,9 +52,7 @@ export default function App() {
 
   // Deep navigation handler
   const handleNavigate = (tab: string, params?: any) => {
-    if (params) {
-      setNavParams(params);
-    }
+    setNavParams(params || {});
     setCurrentTab(tab);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -117,10 +115,13 @@ export default function App() {
           {currentTab === 'revision' && (
             <RevisionView
               initialConcept={navParams.concept}
-              onStartRetest={(concept) =>
+              onStartRetest={(concept, subjectId, chapterId) =>
                 handleNavigate('studylab', {
                   subTab: 'quiz',
                   concept,
+                  materialId: storage.getMaterials().find((material) =>
+                    material.subjectId === subjectId && (!chapterId || material.chapterId === chapterId)
+                  )?.id || storage.getMaterials().find((material) => material.subjectId === subjectId)?.id,
                 })
               }
             />

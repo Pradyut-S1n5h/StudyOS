@@ -20,9 +20,10 @@ import {
 import { Flashcard, SpacedTopic, QuizAttempt, Subject } from '../../types';
 import { storage } from '../../services/storage';
 import { StudyIntelligenceEngine } from '../../services/intelligence';
+import { localDateString } from '../../services/dates';
 
 interface RevisionViewProps {
-  onStartRetest: (concept: string) => void;
+  onStartRetest: (concept: string, subjectId: string, chapterId?: string) => void;
   initialConcept?: string;
 }
 
@@ -70,7 +71,7 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
     return () => window.removeEventListener('studyos_storage_change', loadAll);
   }, []);
 
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = localDateString();
 
   // Spaced repetition due items
   const dueTopics = topics.filter((t) => t.status === 'due_today' || t.status === 'overdue');
@@ -220,7 +221,7 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
               {topics.map((item) => {
                 const isOverdue = item.status === 'overdue';
                 const isDueToday = item.status === 'due_today';
-                const isMastered = item.status === 'mastered';
+                const isMastered = item.masteryStatus === 'mastered';
 
                 return (
                   <div
@@ -256,6 +257,10 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
                         <span>•</span>
                         <span>Measured Accuracy: {item.accuracy}%</span>
                         <span>•</span>
+                        <span>Mastery: {item.masteryStatus.replace('_', ' ')}</span>
+                        <span>•</span>
+                        <span>Evidence: {item.sessionsCount} quiz session(s)</span>
+                        <span>•</span>
                         <span>Missed: {item.missedQuestionsCount} time(s)</span>
                         <span>•</span>
                         <span>Next Review: {item.nextReviewDate}</span>
@@ -264,7 +269,7 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
 
                     <div className="flex items-center gap-3">
                       <button
-                        onClick={() => onStartRetest(item.concept)}
+                        onClick={() => onStartRetest(item.concept, item.subjectId, item.chapterId)}
                         className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold shadow-sm transition-all"
                       >
                         <Zap className="w-3.5 h-3.5 fill-current" />
@@ -424,7 +429,7 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
                     </div>
 
                     <button
-                      onClick={() => onStartRetest(mq.concept)}
+                      onClick={() => onStartRetest(mq.concept, mq.subjectId)}
                       className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold"
                     >
                       Practice

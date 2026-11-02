@@ -30,7 +30,7 @@ $$\text{STUDY MATERIAL} \longrightarrow \text{UNDERSTANDING} \longrightarrow \te
 
 ### 2. My Library
 - **Subject & Chapter Management**: Create, customize, color-code, and manage subjects and chapters.
-- **Material Ingestion**: Paste lecture notes, or upload `.txt`, `.md`, or `.pdf` text documents with client-side text extraction.
+- **Material Ingestion**: Paste lecture notes, or upload `.txt`, `.md`, or selectable-text `.pdf` documents with bounded client-side extraction. Scanned/image-only PDFs are not supported; OCR text must be pasted or uploaded separately.
 - **Instant Study Lab Launchers**: Jump straight from any material into "Generate Notes", "Create Quiz", or "Ask Questions".
 
 ### 3. Study Planner
@@ -41,7 +41,7 @@ $$\text{STUDY MATERIAL} \longrightarrow \text{UNDERSTANDING} \longrightarrow \te
 ### 4. AI Study Lab
 - **Notes Generator**: Configurable styles including *Quick Revision*, *Detailed Academic Explanation*, *Key Definitions & Terminology*, *Formulas & Concepts*, and *Common Misconceptions*. Includes copy and save-to-library features.
 - **Multi-Depth Explanation Mode**: Switch between *Beginner (ELI5 analogies)*, *Standard collegiate*, *Advanced (mechanisms & math)*, and *Step-by-Step* breakdowns.
-- **Grounded Q&A**: Answers questions strictly using the active study material with citation indicators.
+- **Grounded Q&A**: Retrieves relevant passages from the active material and cites their original character offsets. Unsupported questions are identified instead of receiving fabricated citations.
 - **Diagnostic Quiz Generator**: Generates balanced 3, 4, or 6-question quizzes (MCQ and AI-evaluated Short Answer) in both *Test Mode* (timed submission) and *Practice Mode* (instant feedback).
 
 ### 5. Revision Center
@@ -72,6 +72,12 @@ $$\text{STUDY MATERIAL} \longrightarrow \text{UNDERSTANDING} \longrightarrow \te
 | **Persistence** | Structured local client-side database with JSON export/import and fallback resilience |
 
 ---
+
+## Offline Behavior
+
+New installations start with an empty library and no study history. The data manager offers an explicit sample curriculum for demonstrations; sample quiz attempts and study sessions are not mixed into a fresh student's analytics.
+
+Without `GEMINI_API_KEY`, local library, planner, revision, persistence, and deterministic scheduling features remain available. AI-generated notes, explanations, quizzes, and short-answer grades return a clear unavailable error and are not recorded as successful operations. Grounded Q&A can refuse a question when no relevant source passage exists, but requires Gemini to compose an answer when passages are found.
 
 ## ⚙️ Environment Variables
 
@@ -106,8 +112,6 @@ npm run start
 
 ---
 
-## 🧪 Tested Workflows
+## Validation
 
-- ✅ Full end-to-end learning loop: Study Material $\to$ Notes Generation $\to$ Diagnostic Quiz $\to$ Scoring & Recording $\to$ Weak Concept Detection $\to$ Spaced Repetition Queue $\to$ Flashcard Recall $\to$ Analytics update.
-- ✅ Offline and fallback resilience: Works smoothly even if the AI key is offline, providing deterministic assistance.
-- ✅ Sample curriculum toggle: Instant one-click switch between rich AP Biology & CS sample data and a completely fresh empty state.
+Run `npm test` for deterministic storage, mastery, and planner checks, `npm run lint` for TypeScript validation, and `npm run build` for a production bundle. AI-backed workflows require a server-side `GEMINI_API_KEY`; the application does not substitute generated learning content when that service is unavailable.

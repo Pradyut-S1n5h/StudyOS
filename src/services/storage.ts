@@ -10,6 +10,7 @@ import {
   StudySession,
   StudyGoal,
 } from '../types';
+import { addCalendarDays, localDateString } from './dates';
 
 const STORAGE_KEYS = {
   SUBJECTS: 'studyos_subjects',
@@ -25,7 +26,41 @@ const STORAGE_KEYS = {
   IS_INITIALIZED: 'studyos_is_initialized_v2',
 };
 
-// Rich, realistic initial data for instant hackathon demonstration
+function isValidImportedRecord(collection: string, value: any): boolean {
+  const isText = (field: unknown) => typeof field === 'string';
+  const hasId = isText(value?.id) && value.id.length > 0;
+  switch (collection) {
+    case 'subjects':
+      return hasId && isText(value.name) && isText(value.color) && isText(value.icon) && isText(value.description) && isText(value.createdAt);
+    case 'chapters':
+      return hasId && isText(value.subjectId) && isText(value.title) && Number.isInteger(value.order);
+    case 'materials':
+      return hasId && isText(value.subjectId) && isText(value.title) && isText(value.content) && ['pasted', 'uploaded_text', 'uploaded_pdf', 'notes'].includes(value.sourceType) && Number.isFinite(value.characterCount) && Number.isFinite(value.wordCount);
+    case 'tasks':
+      return hasId && isText(value.title) && isText(value.subjectId) && isText(value.dueDate) && Number.isFinite(value.estimatedMinutes) && ['high', 'medium', 'low'].includes(value.priority) && typeof value.completed === 'boolean';
+    case 'notes':
+      return hasId && isText(value.subjectId) && isText(value.title) && isText(value.content) && Array.isArray(value.keyTakeaways);
+    case 'quizzes':
+      return hasId && isText(value.subjectId) && isText(value.title) && Array.isArray(value.questions) && value.questions.every((question: any) =>
+        isText(question.question) && ['mcq', 'short_answer'].includes(question.type) && isText(question.concept) && isText(question.explanation) &&
+        (question.type === 'mcq'
+          ? Array.isArray(question.options) && question.options.length === 4 && question.options.every(isText) && Number.isInteger(question.correctAnswer) && question.correctAnswer >= 0 && question.correctAnswer < 4
+          : isText(question.expectedAnswer) && !!question.expectedAnswer.trim())
+      );
+    case 'attempts':
+      return hasId && isText(value.quizId) && isText(value.quizTitle) && isText(value.subjectId) && Array.isArray(value.answers) && value.answers.every((answer: any) =>
+        isText(answer.questionId) && isText(answer.questionText) && isText(answer.concept) && typeof answer.isCorrect === 'boolean' && Number.isFinite(answer.score)
+      );
+    case 'flashcards':
+      return hasId && isText(value.subjectId) && isText(value.concept) && isText(value.front) && isText(value.back) && isText(value.nextReviewDate) && Number.isFinite(value.intervalDays) && Number.isFinite(value.easeFactor);
+    case 'sessions':
+      return hasId && isText(value.subjectId) && Number.isFinite(value.durationMinutes) && isText(value.date) && isText(value.timestamp) && ['reading', 'notes_gen', 'quiz', 'flashcards', 'revision', 'custom_timer'].includes(value.type);
+    default:
+      return false;
+  }
+}
+
+// Explicit opt-in sample curriculum for demonstrations and testing.
 export const INITIAL_SUBJECTS: Subject[] = [
   {
     id: 'subj-bio',
@@ -113,7 +148,7 @@ export const INITIAL_TASKS: StudyTask[] = [
     description: 'Focus on ATP/NADPH stoichiometry and net G3P output.',
     subjectId: 'subj-bio',
     chapterId: 'chap-bio-1',
-    dueDate: new Date(Date.now() + 86400000).toISOString().split('T')[0],
+    dueDate: localDateString(addCalendarDays(1)),
     dueTime: '17:00',
     estimatedMinutes: 30,
     actualMinutesSpent: 0,
@@ -127,7 +162,7 @@ export const INITIAL_TASKS: StudyTask[] = [
     description: 'Analyze merge sort and binary search recurrences using Master Theorem.',
     subjectId: 'subj-cs',
     chapterId: 'chap-cs-1',
-    dueDate: new Date(Date.now() + 2 * 86400000).toISOString().split('T')[0],
+    dueDate: localDateString(addCalendarDays(2)),
     dueTime: '20:00',
     estimatedMinutes: 45,
     actualMinutesSpent: 45,
@@ -142,7 +177,7 @@ export const INITIAL_TASKS: StudyTask[] = [
     description: 'Targeted practice for weak concept identified yesterday.',
     subjectId: 'subj-bio',
     chapterId: 'chap-bio-1',
-    dueDate: new Date().toISOString().split('T')[0],
+    dueDate: localDateString(),
     dueTime: '18:30',
     estimatedMinutes: 20,
     actualMinutesSpent: 0,
@@ -300,7 +335,7 @@ export const INITIAL_FLASHCARDS: Flashcard[] = [
     repetitions: 1,
     intervalDays: 3,
     easeFactor: 2.5,
-    nextReviewDate: new Date(Date.now() + 2 * 86400000).toISOString().split('T')[0],
+    nextReviewDate: localDateString(addCalendarDays(2)),
     lastReviewedAt: new Date(Date.now() - 86400000).toISOString(),
   },
   {
@@ -314,7 +349,7 @@ export const INITIAL_FLASHCARDS: Flashcard[] = [
     repetitions: 0,
     intervalDays: 1,
     easeFactor: 2.3,
-    nextReviewDate: new Date().toISOString().split('T')[0], // Due today!
+    nextReviewDate: localDateString(), // Due today!
     lastReviewedAt: new Date(Date.now() - 86400000).toISOString(),
   },
   {
@@ -328,7 +363,7 @@ export const INITIAL_FLASHCARDS: Flashcard[] = [
     repetitions: 0,
     intervalDays: 1,
     easeFactor: 2.2,
-    nextReviewDate: new Date().toISOString().split('T')[0], // Due today!
+    nextReviewDate: localDateString(), // Due today!
     lastReviewedAt: new Date(Date.now() - 86400000).toISOString(),
   },
 ];
@@ -338,7 +373,7 @@ export const INITIAL_SESSIONS: StudySession[] = [
     id: 'sess-1',
     subjectId: 'subj-bio',
     durationMinutes: 45,
-    date: new Date(Date.now() - 2 * 86400000).toISOString().split('T')[0],
+    date: localDateString(addCalendarDays(-2)),
     timestamp: new Date(Date.now() - 2 * 86400000).toISOString(),
     type: 'reading',
     notes: 'Studied chloroplast anatomy & light reactions.',
@@ -347,7 +382,7 @@ export const INITIAL_SESSIONS: StudySession[] = [
     id: 'sess-2',
     subjectId: 'subj-cs',
     durationMinutes: 35,
-    date: new Date(Date.now() - 86400000).toISOString().split('T')[0],
+    date: localDateString(addCalendarDays(-1)),
     timestamp: new Date(Date.now() - 86400000).toISOString(),
     type: 'revision',
     notes: 'Big-O tree recursion exercises.',
@@ -356,7 +391,7 @@ export const INITIAL_SESSIONS: StudySession[] = [
     id: 'sess-3',
     subjectId: 'subj-bio',
     durationMinutes: 25,
-    date: new Date().toISOString().split('T')[0],
+    date: localDateString(),
     timestamp: new Date().toISOString(),
     type: 'quiz',
     notes: 'Diagnostic quiz completed on Photosynthesis.',
@@ -372,7 +407,7 @@ export const INITIAL_GOAL: StudyGoal = {
 export const storage = {
   init() {
     if (!localStorage.getItem(STORAGE_KEYS.IS_INITIALIZED)) {
-      this.resetToDefaults();
+      this.clearAllData();
     }
   },
 
@@ -666,7 +701,7 @@ export const storage = {
       repetitions: 0,
       intervalDays: 1,
       easeFactor: 2.5,
-      nextReviewDate: new Date().toISOString().split('T')[0],
+      nextReviewDate: localDateString(),
     };
     this.saveFlashcards([newCard, ...cards]);
     return newCard;
@@ -697,15 +732,14 @@ export const storage = {
       easeFactor += 0.15;
     }
 
-    const nextDate = new Date();
-    nextDate.setDate(nextDate.getDate() + interval);
+    const nextDate = addCalendarDays(interval);
 
     cards[idx] = {
       ...card,
       repetitions,
       intervalDays: interval,
       easeFactor,
-      nextReviewDate: nextDate.toISOString().split('T')[0],
+      nextReviewDate: localDateString(nextDate),
       lastReviewedAt: new Date().toISOString(),
     };
 
@@ -732,7 +766,7 @@ export const storage = {
     const newSession: StudySession = {
       ...session,
       id: `sess-${Date.now()}`,
-      date: now.toISOString().split('T')[0],
+      date: localDateString(now),
       timestamp: now.toISOString(),
     };
     this.saveSessions([newSession, ...sessions]);
@@ -770,21 +804,80 @@ export const storage = {
       version: '1.0',
     };
   },
-  importAll(jsonString: string) {
+  importAll(jsonString: string, mode: 'merge' | 'replace' = 'merge') {
     try {
+      if (mode !== 'merge' && mode !== 'replace') {
+        return { success: false, error: 'Import mode is invalid.' };
+      }
       const data = JSON.parse(jsonString);
-      if (data.subjects) localStorage.setItem(STORAGE_KEYS.SUBJECTS, JSON.stringify(data.subjects));
-      if (data.chapters) localStorage.setItem(STORAGE_KEYS.CHAPTERS, JSON.stringify(data.chapters));
-      if (data.materials) localStorage.setItem(STORAGE_KEYS.MATERIALS, JSON.stringify(data.materials));
-      if (data.tasks) localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(data.tasks));
-      if (data.notes) localStorage.setItem(STORAGE_KEYS.NOTES, JSON.stringify(data.notes));
-      if (data.quizzes) localStorage.setItem(STORAGE_KEYS.QUIZZES, JSON.stringify(data.quizzes));
-      if (data.attempts) localStorage.setItem(STORAGE_KEYS.ATTEMPTS, JSON.stringify(data.attempts));
-      if (data.flashcards) localStorage.setItem(STORAGE_KEYS.FLASHCARDS, JSON.stringify(data.flashcards));
-      if (data.sessions) localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(data.sessions));
-      if (data.goal) localStorage.setItem(STORAGE_KEYS.GOAL, JSON.stringify(data.goal));
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        return { success: false, error: 'Import must be a StudyOS JSON object.' };
+      }
+
+      const collections = [
+        ['subjects', STORAGE_KEYS.SUBJECTS, this.getSubjects()],
+        ['chapters', STORAGE_KEYS.CHAPTERS, this.getChapters()],
+        ['materials', STORAGE_KEYS.MATERIALS, this.getMaterials()],
+        ['tasks', STORAGE_KEYS.TASKS, this.getTasks()],
+        ['notes', STORAGE_KEYS.NOTES, this.getNotes()],
+        ['quizzes', STORAGE_KEYS.QUIZZES, this.getQuizzes()],
+        ['attempts', STORAGE_KEYS.ATTEMPTS, this.getAttempts()],
+        ['flashcards', STORAGE_KEYS.FLASHCARDS, this.getFlashcards()],
+        ['sessions', STORAGE_KEYS.SESSIONS, this.getSessions()],
+      ] as const;
+      const providedCollections = collections.filter(([name]) => Object.prototype.hasOwnProperty.call(data, name));
+      if (providedCollections.length === 0 && !Object.prototype.hasOwnProperty.call(data, 'goal')) {
+        return { success: false, error: 'Import contains no StudyOS records.' };
+      }
+      if (mode === 'replace' && (providedCollections.length !== collections.length || !Object.prototype.hasOwnProperty.call(data, 'goal'))) {
+        return { success: false, error: 'Replacing data requires a complete StudyOS backup.' };
+      }
+
+      const writes: [string, string][] = [];
+      let preservedRecords = 0;
+      for (const [name, storageKey, existing] of providedCollections) {
+        const incoming = data[name];
+        if (!Array.isArray(incoming) || incoming.some((record: unknown) =>
+          !record || typeof record !== 'object' || Array.isArray(record) || !isValidImportedRecord(name, record)
+        ) || new Set(incoming.map((record: { id: string }) => record.id)).size !== incoming.length) {
+          return { success: false, error: `Import collection "${name}" is invalid.` };
+        }
+        if (mode === 'merge') {
+          const existingIds = new Set(existing.map((record) => record.id));
+          const additions = incoming.filter((record: { id: string }) => {
+            if (existingIds.has(record.id)) {
+              preservedRecords += 1;
+              return false;
+            }
+            existingIds.add(record.id);
+            return true;
+          });
+          writes.push([storageKey, JSON.stringify([...existing, ...additions])]);
+        } else {
+          writes.push([storageKey, JSON.stringify(incoming)]);
+        }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(data, 'goal')) {
+        const goal = data.goal;
+        if (!goal || typeof goal !== 'object' || !Number.isFinite(goal.dailyMinutesTarget) || goal.dailyMinutesTarget <= 0 || !Number.isFinite(goal.weeklyQuizzesTarget) || goal.weeklyQuizzesTarget <= 0) {
+          return { success: false, error: 'Import goal settings are invalid.' };
+        }
+        if (mode === 'replace') writes.push([STORAGE_KEYS.GOAL, JSON.stringify(goal)]);
+      }
+
+      const previousValues = writes.map(([key]) => [key, localStorage.getItem(key)] as const);
+      try {
+        for (const [key, value] of writes) localStorage.setItem(key, value);
+      } catch (error) {
+        for (const [key, value] of previousValues) {
+          if (value === null) localStorage.removeItem(key);
+          else localStorage.setItem(key, value);
+        }
+        throw error;
+      }
       window.dispatchEvent(new Event('studyos_storage_change'));
-      return { success: true };
+      return { success: true, preservedRecords, preservedGoal: mode === 'merge' && Object.prototype.hasOwnProperty.call(data, 'goal') };
     } catch (e) {
       return { success: false, error: (e as Error).message };
     }

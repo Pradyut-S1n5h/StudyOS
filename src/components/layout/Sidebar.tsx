@@ -11,6 +11,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { storage } from '../../services/storage';
+import { localDateString } from '../../services/dates';
 import { StudyIntelligenceEngine } from '../../services/intelligence';
 
 interface SidebarProps {
@@ -38,7 +39,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       const tasks = storage.getTasks();
       const sessions = storage.getSessions();
 
-      const todayStr = new Date().toISOString().split('T')[0];
+      const todayStr = localDateString();
 
       // Spaced repetition due
       const concepts = StudyIntelligenceEngine.analyzeConcepts(attempts, subjects);

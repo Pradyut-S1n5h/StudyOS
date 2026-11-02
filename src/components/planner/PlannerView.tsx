@@ -17,11 +17,12 @@ import {
 } from 'lucide-react';
 import { StudyTask, Subject, Chapter, Priority } from '../../types';
 import { storage } from '../../services/storage';
-import { api, SmartPlanResponse } from '../../services/api';
 import { StudyIntelligenceEngine } from '../../services/intelligence';
+import { localDateString } from '../../services/dates';
 
 export const PlannerView: React.FC = () => {
   const [tasks, setTasks] = useState<StudyTask[]>([]);
+  const [attempts, setAttempts] = useState(storage.getAttempts());
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [chapters, setChapters] = useState<Chapter[]>([]);
 
@@ -37,7 +38,7 @@ export const PlannerView: React.FC = () => {
   const [taskSubjectId, setTaskSubjectId] = useState('');
   const [taskChapterId, setTaskChapterId] = useState('');
   const [taskDueDate, setTaskDueDate] = useState(
-    new Date().toISOString().split('T')[0]
+    localDateString()
   );
   const [taskDueTime, setTaskDueTime] = useState('18:00');
   const [taskDuration, setTaskDuration] = useState(30);
@@ -46,11 +47,12 @@ export const PlannerView: React.FC = () => {
   // Smart Schedule Assistant Modal
   const [showSmartPlanModal, setShowSmartPlanModal] = useState(false);
   const [availableHours, setAvailableHours] = useState(2);
-  const [isGeneratingPlan, setIsGeneratingPlan] = useState(false);
-  const [smartPlanResult, setSmartPlanResult] = useState<SmartPlanResponse | null>(null);
+  const [planGenerated, setPlanGenerated] = useState(false);
+  const [smartPlanResult, setSmartPlanResult] = useState<ReturnType<typeof StudyIntelligenceEngine.generateStudyPlan> | null>(null);
 
   const loadData = () => {
     setTasks(storage.getTasks());
+    setAttempts(storage.getAttempts());
     setSubjects(storage.getSubjects());
     setChapters(storage.getChapters());
   };
@@ -61,7 +63,16 @@ export const PlannerView: React.FC = () => {
     return () => window.removeEventListener('studyos_storage_change', loadData);
   }, []);
 
-  const todayStr = new Date().toISOString().split('T')[0];
+  useEffect(() => {
+    if (!showSmartPlanModal || !planGenerated) return;
+    const concepts = StudyIntelligenceEngine.analyzeConcepts(attempts, subjects);
+    const weakTopics = concepts.filter((concept) => concept.accuracy < 70);
+    setSmartPlanResult(
+      StudyIntelligenceEngine.generateStudyPlan(tasks, weakTopics, availableHours)
+    );
+  }, [availableHours, attempts, planGenerated, showSmartPlanModal, subjects, tasks]);
+
+  const todayStr = localDateString();
 
   // Filtering
   const filteredTasks = tasks.filter((t) => {
@@ -114,27 +125,16 @@ export const PlannerView: React.FC = () => {
     setShowModal(false);
   };
 
-  // Trigger Smart Schedule Assistant
-  const handleGenerateSmartPlan = async () => {
-    setIsGeneratingPlan(true);
-    try {
-      const attempts = storage.getAttempts();
-      const concs = StudyIntelligenceEngine.analyzeConcepts(attempts, subjects);
-      const weakTopics = concs.filter((c) => c.accuracy < 70);
-      const pendingTasks = tasks.filter((t) => !t.completed);
-
-      const res = await api.generateSmartPlan(
-        pendingTasks,
-        weakTopics,
-        availableHours,
-        storage.getGoal()
-      );
-      setSmartPlanResult(res);
-    } catch (err: any) {
-      console.error(err);
-    } finally {
-      setIsGeneratingPlan(false);
-    }
+  const handleGenerateSmartPlan = () => {
+    setPlanGenerated(true);
+    const concepts = StudyIntelligenceEngine.analyzeConcepts(attempts, subjects);
+    setSmartPlanResult(
+      StudyIntelligenceEngine.generateStudyPlan(
+        tasks,
+        concepts.filter((concept) => concept.accuracy < 70),
+        availableHours
+      )
+    );
   };
 
   return (
@@ -152,12 +152,13 @@ export const PlannerView: React.FC = () => {
           <button
             onClick={() => {
               setSmartPlanResult(null);
+              setPlanGenerated(false);
               setShowSmartPlanModal(true);
             }}
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-950/60 hover:bg-indigo-900/60 text-indigo-300 border border-indigo-700/50 text-xs font-semibold shadow-sm transition-all"
           >
             <Sparkles className="w-4 h-4 text-indigo-400" />
-            <span>AI Schedule Assistant</span>
+            <span>Study Schedule</span>
           </button>
 
           <button
@@ -501,7 +502,7 @@ export const PlannerView: React.FC = () => {
             </div>
 
             <p className="text-xs text-slate-400 leading-relaxed">
-              Analyzes your pending tasks, deadlines, and weak concepts to formulate a balanced, sustainable daily timetable. (Note: A schedule assists planning, but mastery depends on practice and active recall).
+              Builds a data-based plan from incomplete tasks, deadlines, and measured weak concepts. Completed tasks are excluded; planned blocks stay within your available study time.
             </p>
 
             <div className="flex items-center gap-4 p-3 rounded-xl bg-slate-950 border border-slate-800">
@@ -522,10 +523,9 @@ export const PlannerView: React.FC = () => {
 
               <button
                 onClick={handleGenerateSmartPlan}
-                disabled={isGeneratingPlan}
                 className="ml-auto px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-40 shadow-sm"
               >
-                {isGeneratingPlan ? 'Synthesizing Plan...' : 'Generate Timetable'}
+                Build Schedule
               </button>
             </div>
 
