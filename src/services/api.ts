@@ -32,10 +32,35 @@ export interface EvaluateAnswerResponse {
   evaluationMethod: 'ai' | 'deterministic';
 }
 
+export interface AiConfigurationStatus {
+  configured: boolean;
+  provider: 'google';
+  model: string;
+  supportedModels: string[];
+}
+
+export interface AiDiagnosticResult {
+  passed: boolean;
+  message: string;
+}
+
+export interface AiDiagnostics {
+  results: Record<string, AiDiagnosticResult>;
+  passed: boolean;
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 class ApiService {
-  private async post<T>(endpoint: string, body: any): Promise<T> {
+  private async post<T>(endpoint: string, body: unknown, signal?: AbortSignal): Promise<T> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 45000); // 45s timeout
+    const timeout = setTimeout(() => controller.abort(), 45000);
+    const abort = () => controller.abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) controller.abort();
 
     try {
       const response = await fetch(endpoint, {
@@ -54,21 +79,93 @@ class ApiService {
 
       return (await response.json()) as T;
     } catch (err: any) {
+      if (signal?.aborted) {
+        throw new Error('Request stopped.');
+      }
       if (err.name === 'AbortError') {
         throw new Error('Request timed out. Please try again.');
       }
       throw err;
     } finally {
       clearTimeout(timeout);
+      signal?.removeEventListener('abort', abort);
     }
   }
 
   async checkHealth() {
     try {
       const res = await fetch('/api/health');
+      if (!res.ok) throw new Error('Backend health check failed.');
       return await res.json();
     } catch {
-      return { status: 'offline', hasGeminiKey: false };
+      return { status: 'offline', aiConfigured: false, provider: null, model: null };
+    }
+  }
+
+  async getAiConfiguration(): Promise<AiConfigurationStatus> {
+    const response = await fetch('/api/ai/config');
+    if (!response.ok) throw new Error('AI settings could not be loaded from the server.');
+    return response.json();
+  }
+
+  async saveAiConfiguration(configuration: { provider: 'google'; model: string; apiKey?: string }) {
+    const response = await fetch('/api/ai/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(configuration),
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(result?.error || `AI settings could not be saved (${response.status}).`);
+    return result as { configured: boolean; provider: string; model: string };
+  }
+
+  async removeAiConfiguration() {
+    const response = await fetch('/api/ai/config', { method: 'DELETE' });
+    const result = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(result?.error || 'AI settings could not be removed.');
+  }
+
+  async runAiDiagnostics(): Promise<AiDiagnostics> {
+    return this.post<AiDiagnostics>('/api/ai/diagnostics', {});
+  }
+
+  async streamChat(messages: ChatMessage[], onText: (text: string) => void, signal: AbortSignal) {
+    const response = await fetch('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages }),
+      signal,
+    });
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => null);
+      throw new Error(errorBody?.error || `Assistant request failed (${response.status}).`);
+    }
+    if (!response.body) throw new Error('Streaming is unavailable in this browser.');
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finished = false;
+    while (!finished) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      let boundary = buffer.indexOf('\n\n');
+      while (boundary >= 0) {
+        const event = buffer.slice(0, boundary).replace(/\r/g, '');
+        buffer = buffer.slice(boundary + 2);
+        const data = event.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n');
+        if (data === '[DONE]') {
+          finished = true;
+          break;
+        }
+        if (data) {
+          const parsed = JSON.parse(data) as { text?: string; error?: string };
+          if (parsed.error) throw new Error(parsed.error);
+          if (parsed.text) onText(parsed.text);
+        }
+        boundary = buffer.indexOf('\n\n');
+      }
+      if (done) finished = true;
     }
   }
 

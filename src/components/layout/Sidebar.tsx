@@ -9,10 +9,12 @@ import {
   Flame,
   Clock,
   Sparkles,
+  Settings,
 } from 'lucide-react';
 import { storage } from '../../services/storage';
 import { localDateString } from '../../services/dates';
 import { StudyIntelligenceEngine } from '../../services/intelligence';
+import { api } from '../../services/api';
 
 interface SidebarProps {
   currentTab: string;
@@ -30,6 +32,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [dueRevisionCount, setDueRevisionCount] = useState(0);
   const [pendingTasksCount, setPendingTasksCount] = useState(0);
   const [streakDays, setStreakDays] = useState(3);
+  const [aiStatus, setAiStatus] = useState('checking');
 
   useEffect(() => {
     const updateCounts = () => {
@@ -61,6 +64,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
     updateCounts();
     window.addEventListener('studyos_storage_change', updateCounts);
     return () => window.removeEventListener('studyos_storage_change', updateCounts);
+  }, []);
+
+  useEffect(() => {
+    api.checkHealth().then((health) => setAiStatus(health.status === 'offline' ? 'unavailable' : health.aiConfigured ? 'configured' : 'not-configured'));
+    const handleAiStatus = (event: Event) => {
+      const status = (event as CustomEvent<{ status?: string }>).detail?.status;
+      if (status) setAiStatus(status);
+    };
+    window.addEventListener('studyos_ai_status', handleAiStatus);
+    return () => window.removeEventListener('studyos_ai_status', handleAiStatus);
   }, []);
 
   const navItems = [
@@ -95,6 +108,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
       desc: 'Notes, explanations & quizzes',
     },
     {
+      id: 'assistant',
+      label: 'AI Assistant',
+      icon: Sparkles,
+      badge: null,
+      desc: 'Chat with your study assistant',
+    },
+    {
       id: 'revision',
       label: 'Revision Center',
       icon: Repeat,
@@ -108,6 +128,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
       icon: BarChart3,
       badge: null,
       desc: 'Mastery & study velocity',
+    },
+    {
+      id: 'settings',
+      label: 'Settings',
+      icon: Settings,
+      badge: null,
+      desc: 'AI provider configuration',
     },
   ];
 
@@ -195,10 +222,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {/* Footer info */}
         <div className="pt-3 border-t border-slate-900 text-[11px] text-slate-400 flex items-center justify-between">
           <span className="flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-            Local DB & AI Connected
+            <span className={`w-1.5 h-1.5 rounded-full ${aiStatus === 'connected' ? 'bg-emerald-400' : aiStatus === 'failed' || aiStatus === 'unavailable' ? 'bg-rose-400' : 'bg-amber-400'}`} />
+            AI {aiStatus === 'checking' ? 'Checking' : aiStatus === 'not-configured' ? 'Not configured' : aiStatus === 'configured' ? 'Configured, not tested' : aiStatus === 'testing' ? 'Testing connection' : aiStatus === 'connected' ? 'Connected' : aiStatus === 'failed' ? 'Connection failed' : 'Service unavailable'}
           </span>
-          <span className="font-mono text-[10px]">Gemini 3.8</span>
+          <span className="font-mono text-[10px]">Gemini</span>
         </div>
       </aside>
     </>

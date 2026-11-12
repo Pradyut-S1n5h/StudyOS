@@ -14,6 +14,8 @@ import { StudyLabView } from './components/studylab/StudyLabView';
 import { RevisionView } from './components/revision/RevisionView';
 import { AnalyticsView } from './components/analytics/AnalyticsView';
 import { StudyTimerModal } from './components/common/StudyTimerModal';
+import { AIChatView } from './components/assistant/AIChatView';
+import { AISettingsView } from './components/settings/AISettingsView';
 
 export default function App() {
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
@@ -128,6 +130,10 @@ export default function App() {
           )}
 
           {currentTab === 'analytics' && <AnalyticsView />}
+
+          {currentTab === 'assistant' && <AIChatView onOpenSettings={() => handleNavigate('settings')} />}
+
+          {currentTab === 'settings' && <AISettingsView />}
         </main>
       </div>
 

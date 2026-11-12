@@ -1,6 +1,9 @@
 import express, { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
+import os from 'node:os';
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, Type } from '@google/genai';
 
@@ -15,53 +18,161 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json({ limit: '1mb' }));
 
-// Initialize Google GenAI
-const apiKey = process.env.GEMINI_API_KEY;
+const SUPPORTED_MODELS = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.5-pro'] as const;
+type AiConfiguration = { provider: 'google'; model: typeof SUPPORTED_MODELS[number]; apiKey: string };
+const configDirectory = process.env.STUDYOS_DATA_DIR || path.join(os.homedir(), '.studyos');
+const configPath = path.join(configDirectory, 'ai-config.enc');
+const encryptionKeyPath = path.join(configDirectory, 'ai-config.key');
+let aiConfiguration: AiConfiguration | null = null;
 let ai: GoogleGenAI | null = null;
-
-if (apiKey) {
-  ai = new GoogleGenAI({
-    apiKey: apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
-}
-
-const PRIMARY_MODEL = 'gemini-3.8-flash';
+const DEFAULT_MODEL: AiConfiguration['model'] = 'gemini-3.8-flash';
 const MAX_AI_INPUT_CHARS = 15000;
 const AI_TIMEOUT_MS = 40000;
+const AI_RETRY_LIMIT = 2;
 const AI_RATE_WINDOW_MS = 60000;
 const AI_RATE_LIMIT = 20;
 const aiRequestCounts = new Map<string, { count: number; resetAt: number }>();
 
-function withTimeout<T>(operation: Promise<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('AI request timed out')), AI_TIMEOUT_MS);
-    operation.then(
-      (value) => {
-        clearTimeout(timeout);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timeout);
-        reject(error);
+async function getEncryptionKey(): Promise<Buffer> {
+  await mkdir(configDirectory, { recursive: true, mode: 0o700 });
+  await chmod(configDirectory, 0o700);
+  try {
+    const key = await readFile(encryptionKeyPath);
+    await chmod(encryptionKeyPath, 0o600);
+    return key;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    const key = randomBytes(32);
+    try {
+      await writeFile(encryptionKeyPath, key, { flag: 'wx', mode: 0o600 });
+      return key;
+    } catch (writeError) {
+      if ((writeError as NodeJS.ErrnoException).code !== 'EEXIST') throw writeError;
+      return readFile(encryptionKeyPath);
+    }
+  }
+}
+
+async function persistAiConfiguration(configuration: AiConfiguration | null) {
+  await mkdir(configDirectory, { recursive: true, mode: 0o700 });
+  await chmod(configDirectory, 0o700);
+  if (!configuration) {
+    const { unlink } = await import('node:fs/promises');
+    await unlink(configPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+    return;
+  }
+  const key = await getEncryptionKey();
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(configuration), 'utf8'), cipher.final()]);
+  const temporaryPath = `${configPath}.${randomBytes(6).toString('hex')}.tmp`;
+  await writeFile(temporaryPath, JSON.stringify({ iv: iv.toString('hex'), tag: cipher.getAuthTag().toString('hex'), data: encrypted.toString('hex') }), { mode: 0o600 });
+  await rename(temporaryPath, configPath);
+}
+
+async function loadAiConfiguration() {
+  try {
+    const [key, encryptedFile] = await Promise.all([getEncryptionKey(), readFile(configPath, 'utf8')]);
+    const encrypted = JSON.parse(encryptedFile) as { iv: string; tag: string; data: string };
+    const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(encrypted.iv, 'hex'));
+    decipher.setAuthTag(Buffer.from(encrypted.tag, 'hex'));
+    const plaintext = Buffer.concat([decipher.update(Buffer.from(encrypted.data, 'hex')), decipher.final()]).toString('utf8');
+    const parsed = JSON.parse(plaintext) as AiConfiguration;
+    if (parsed.provider !== 'google' || !SUPPORTED_MODELS.includes(parsed.model) || typeof parsed.apiKey !== 'string' || !parsed.apiKey) {
+      throw new Error('Stored AI configuration is invalid');
+    }
+    aiConfiguration = parsed;
+    ai = new GoogleGenAI({ apiKey: parsed.apiKey });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.error('[StudyOS] AI configuration could not be loaded. Reconfigure AI in Settings.');
+    }
+  }
+  if (!aiConfiguration && process.env.GEMINI_API_KEY?.trim()) {
+    aiConfiguration = { provider: 'google', model: DEFAULT_MODEL, apiKey: process.env.GEMINI_API_KEY.trim() };
+    ai = new GoogleGenAI({ apiKey: aiConfiguration.apiKey });
+  }
+}
+
+function getAiErrorStatus(error: unknown): number {
+  if (!error || typeof error !== 'object') return 0;
+  const status = 'status' in error ? Number(error.status) : 'statusCode' in error ? Number(error.statusCode) : 0;
+  return Number.isFinite(status) ? status : 0;
+}
+
+function isRetryable(error: unknown) {
+  if (!error || typeof error !== 'object') return false;
+  const status = getAiErrorStatus(error);
+  const code = 'code' in error ? String(error.code) : '';
+  return status === 408 || status === 429 || status >= 500 || ['ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN'].includes(code);
+}
+
+async function generateAiContent(contents: string, generationConfig?: Record<string, unknown>, requestSignal?: AbortSignal) {
+  if (!ai || !aiConfiguration) throw new Error('AI is not configured');
+  for (let attempt = 0; ; attempt += 1) {
+    if (requestSignal?.aborted) throw new Error('AI request was cancelled');
+    const controller = new AbortController();
+    const abortRequest = () => controller.abort();
+    requestSignal?.addEventListener('abort', abortRequest, { once: true });
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, AI_TIMEOUT_MS);
+    try {
+      return await ai.models.generateContent({
+        model: aiConfiguration.model,
+        contents,
+        config: { ...generationConfig, abortSignal: controller.signal },
+      });
+    } catch (error) {
+      if (requestSignal?.aborted) throw error;
+      if (attempt >= AI_RETRY_LIMIT || (!timedOut && !isRetryable(error))) {
+        if (timedOut) throw Object.assign(new Error('AI request timed out'), { code: 'ETIMEDOUT' });
+        throw error;
       }
-    );
+      await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+    } finally {
+      clearTimeout(timeout);
+      requestSignal?.removeEventListener('abort', abortRequest);
+    }
+  }
+}
+
+function bindRequestCancellation(req: Request, res: Response) {
+  const controller = new AbortController();
+  res.on('close', () => {
+    if (!res.writableEnded) controller.abort();
   });
+  return controller.signal;
 }
 
 function requireAi(res: Response): boolean {
   if (ai) return true;
-  res.status(503).json({ error: 'AI is unavailable because GEMINI_API_KEY is not configured. Your material was not processed.' });
+  res.status(503).json({ error: 'AI is not configured. Open Settings → AI Configuration, add a Google AI API key, and test the connection.' });
   return false;
 }
 
 function reportAiFailure(res: Response, operation: string, error: unknown) {
-  console.error(`AI ${operation} failed.`);
-  res.status(502).json({ error: `AI ${operation} failed. Your data was not recorded. Please retry.` });
+  const status = getAiErrorStatus(error);
+  const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+  console.error(`AI ${operation} failed (status=${status || 'unknown'}, code=${code || 'unknown'}).`);
+  if (res.destroyed || res.headersSent) return;
+  if (status === 401 || status === 403) {
+    res.status(502).json({ error: 'The provider rejected the saved API key. Check or replace it in AI Configuration, then test the connection.' });
+  } else if (status === 400) {
+    res.status(502).json({ error: 'The provider rejected this request. Confirm the key is a Google AI Studio API key with Gemini API access, then test the selected model in AI Configuration.' });
+  } else if (status === 429) {
+    res.status(429).json({ error: 'The AI provider is rate-limiting requests or the API quota is exhausted. Wait briefly or check your provider quota.' });
+  } else if (status === 404) {
+    res.status(502).json({ error: 'The selected model is unavailable for this API key. Choose another model in AI Configuration and test again.' });
+  } else if (code === 'ETIMEDOUT' || code === 'ECONNRESET') {
+    res.status(504).json({ error: 'The AI request timed out or the network connection was interrupted. Check your connection and retry.' });
+  } else {
+    res.status(502).json({ error: `AI ${operation} could not be completed. The provider may be temporarily unavailable; retry shortly.` });
+  }
 }
 
 function retrievePassages(content: string, question: string) {
@@ -101,8 +212,9 @@ function retrievePassages(content: string, question: string) {
 app.get('/api/health', (req: Request, res: Response) => {
   res.json({
     status: 'ok',
-    hasGeminiKey: !!apiKey,
-    model: PRIMARY_MODEL,
+    aiConfigured: !!aiConfiguration,
+    provider: aiConfiguration?.provider || null,
+    model: aiConfiguration?.model || null,
     time: new Date().toISOString(),
   });
 });
@@ -133,11 +245,152 @@ app.use('/api/ai', (req: Request, res: Response, next) => {
 });
 
 app.use('/api/ai', (req: Request, res: Response, next) => {
+  if (req.method === 'GET' || req.method === 'DELETE') {
+    next();
+    return;
+  }
   if (!req.is('application/json') || !req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
     res.status(400).json({ error: 'AI requests must contain a JSON object.' });
     return;
   }
   next();
+});
+
+app.get('/api/ai/config', (_req: Request, res: Response) => {
+  res.json({
+    configured: !!aiConfiguration,
+    provider: aiConfiguration?.provider || 'google',
+    model: aiConfiguration?.model || DEFAULT_MODEL,
+    supportedModels: SUPPORTED_MODELS,
+  });
+});
+
+app.put('/api/ai/config', async (req: Request, res: Response) => {
+  const { provider = 'google', model = DEFAULT_MODEL, apiKey: submittedKey } = req.body;
+  if (provider !== 'google' || typeof model !== 'string' || !SUPPORTED_MODELS.includes(model as AiConfiguration['model'])) {
+    res.status(400).json({ error: 'Choose Google Gemini and a supported model.' });
+    return;
+  }
+  if (submittedKey !== undefined && (typeof submittedKey !== 'string' || submittedKey.trim().length < 8 || submittedKey.length > 500)) {
+    res.status(400).json({ error: 'Enter a valid Google AI API key.' });
+    return;
+  }
+  const apiKey = typeof submittedKey === 'string' && submittedKey.trim() ? submittedKey.trim() : aiConfiguration?.apiKey;
+  if (!apiKey) {
+    res.status(400).json({ error: 'Enter a Google AI API key before saving.' });
+    return;
+  }
+  try {
+    const nextConfiguration: AiConfiguration = { provider, model: model as AiConfiguration['model'], apiKey };
+    await persistAiConfiguration(nextConfiguration);
+    aiConfiguration = nextConfiguration;
+    ai = new GoogleGenAI({ apiKey });
+    res.json({ configured: true, provider, model: nextConfiguration.model });
+  } catch {
+    console.error('[StudyOS] AI configuration could not be saved.');
+    res.status(500).json({ error: 'AI settings could not be securely saved on this server. Check server storage permissions and retry.' });
+  }
+});
+
+app.delete('/api/ai/config', async (_req: Request, res: Response) => {
+  try {
+    await persistAiConfiguration(null);
+    aiConfiguration = null;
+    ai = null;
+    res.json({ configured: false });
+  } catch {
+    console.error('[StudyOS] AI configuration could not be removed.');
+    res.status(500).json({ error: 'AI settings could not be removed from this server.' });
+  }
+});
+
+app.post('/api/ai/diagnostics', async (_req: Request, res: Response) => {
+  const results: Record<string, { passed: boolean; message: string }> = {
+    backend: { passed: true, message: 'StudyOS backend is responding.' },
+    configuration: { passed: !!aiConfiguration, message: aiConfiguration ? 'Provider configuration is saved on the server.' : 'No provider key is configured.' },
+    authentication: { passed: false, message: 'Not tested.' },
+    model: { passed: false, message: 'Not tested.' },
+    generation: { passed: false, message: 'Not tested.' },
+    response: { passed: false, message: 'Not tested.' },
+  };
+  if (ai && aiConfiguration) {
+    try {
+      const generated = await generateAiContent('Reply with exactly: StudyOS AI is ready.');
+      results.authentication = { passed: true, message: 'The provider accepted the saved credentials.' };
+      results.model = { passed: true, message: `Model ${aiConfiguration.model} generated a response.` };
+      results.generation = { passed: true, message: 'A real test-generation request completed.' };
+      results.response = { passed: typeof generated.text === 'string' && generated.text.trim().length > 0, message: generated.text?.trim() ? 'The provider response was parsed successfully.' : 'The provider returned an empty response.' };
+    } catch (error) {
+      const status = getAiErrorStatus(error);
+      const message = status === 401 || status === 403
+        ? 'Provider authentication failed. Replace the API key and test again.'
+        : status === 400
+        ? 'The provider rejected the request. Confirm this is a Google AI Studio API key with Gemini API access and retry.'
+        : status === 404
+        ? 'The configured model is unavailable. Select another model and test again.'
+        : status === 429
+        ? 'Provider quota or rate limit reached. Check the provider quota and retry.'
+        : 'The provider could not complete a test request. Check network access and retry.';
+      results.authentication = { passed: false, message };
+      results.model = { passed: false, message };
+      results.generation = { passed: false, message };
+      results.response = { passed: false, message: 'No valid provider response was received.' };
+    }
+  }
+  res.json({ results, passed: Object.values(results).every((result) => result.passed) });
+});
+
+app.post('/api/ai/chat', async (req: Request, res: Response) => {
+  const { messages } = req.body;
+  if (!Array.isArray(messages) || messages.length < 1 || messages.length > 20 || messages.some((message) =>
+    !message || !['user', 'assistant'].includes(message.role) || typeof message.content !== 'string' || !message.content.trim() || message.content.length > 4000
+  ) || messages.reduce((length: number, message: { content: string }) => length + message.content.length, 0) > MAX_AI_INPUT_CHARS) {
+    res.status(400).json({ error: 'Chat requires 1 to 20 non-empty messages, with no more than 15,000 characters in total.' });
+    return;
+  }
+  if (!requireAi(res) || !ai || !aiConfiguration) return;
+
+  const prompt = `You are StudyOS, a clear and encouraging academic study assistant. Answer the student's latest message accurately, explain uncertainty, and use earlier conversation as context.\n\nCONVERSATION:\n${messages.map((message: { role: string; content: string }) => `${message.role === 'assistant' ? 'StudyOS' : 'Student'}: ${message.content}`).join('\n\n')}\n\nStudyOS:`;
+  const signal = bindRequestCancellation(req, res);
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal.addEventListener('abort', abort, { once: true });
+  const timeout = setTimeout(abort, AI_TIMEOUT_MS);
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('X-Accel-Buffering', 'no');
+
+  try {
+    const stream = await ai.models.generateContentStream({
+      model: aiConfiguration.model,
+      contents: prompt,
+      config: { abortSignal: controller.signal },
+    });
+    for await (const chunk of stream) {
+      if (controller.signal.aborted) break;
+      if (chunk.text) res.write(`data: ${JSON.stringify({ text: chunk.text })}\n\n`);
+    }
+    if (!controller.signal.aborted) res.write('data: [DONE]\n\n');
+    res.end();
+  } catch (error) {
+    if (!controller.signal.aborted && !res.destroyed) {
+      const status = getAiErrorStatus(error);
+      const message = status === 401 || status === 403
+        ? 'The provider rejected the saved API key. Check it in AI Configuration.'
+        : status === 400
+        ? 'The provider rejected the request. Confirm the key has Gemini API access and the selected model is available.'
+        : status === 429
+        ? 'The AI provider quota or rate limit was reached. Wait briefly or check your provider quota.'
+        : status === 404
+        ? 'The selected model is unavailable. Choose another model in AI Configuration.'
+        : 'The AI assistant could not complete this response. Check your connection and retry.';
+      res.write(`data: ${JSON.stringify({ error: message })}\n\n`);
+      res.end();
+    }
+  } finally {
+    clearTimeout(timeout);
+    signal.removeEventListener('abort', abort);
+  }
 });
 
 // 1. AI Notes Generator
@@ -181,10 +434,7 @@ ${content.slice(0, 15000)}
 
 Use the requested style throughout. Clearly label facts stated in the source as "From the supplied material". If adding a clarifying explanation not stated by the source, place it in a separate "Additional explanation" section and do not imply the source said it. Do not invent facts, definitions, examples, or conclusions absent from the source. Return useful Markdown notes and 3-5 takeaways grounded in the source.`;
 
-    const response = await withTimeout(ai.models.generateContent({
-      model: PRIMARY_MODEL,
-      contents: prompt,
-    }));
+    const response = await generateAiContent(prompt);
 
     const markdownContent = response.text?.trim();
     if (!markdownContent) throw new Error('Model returned empty notes');
@@ -256,10 +506,7 @@ Format your response in Markdown with:
 3. A memorable analogy or practical example.
 4. Two active-recall check questions for the student to self-test their understanding.`;
 
-    const response = await withTimeout(ai.models.generateContent({
-      model: PRIMARY_MODEL,
-      contents: prompt,
-    }));
+    const response = await generateAiContent(prompt);
 
     const explanation = response.text?.trim();
     if (!explanation) throw new Error('Model returned an empty explanation');
@@ -308,10 +555,7 @@ ${question}
 RULES:
 Return JSON with sourceAnswer (or empty string if unsupported), generalContext (optional, clearly separate general academic context), and citedPassageIds. Cite only passage IDs whose text supports the sourceAnswer. If the passages do not answer the question, say so in sourceAnswer and leave citedPassageIds empty.`;
 
-    const response = await withTimeout(ai.models.generateContent({
-      model: PRIMARY_MODEL,
-      contents: prompt,
-      config: {
+    const response = await generateAiContent(prompt, {
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
@@ -322,8 +566,7 @@ Return JSON with sourceAnswer (or empty string if unsupported), generalContext (
           },
           required: ['sourceAnswer', 'citedPassageIds'],
         },
-      },
-    }));
+    });
 
     const result = JSON.parse(response.text || '{}');
     if (typeof result.sourceAnswer !== 'string' || !Array.isArray(result.citedPassageIds) || result.citedPassageIds.some((id: unknown) => typeof id !== 'string' || !passages.some((passage) => passage.id === id))) {
@@ -406,10 +649,7 @@ CRITICAL INSTRUCTIONS:
 - When a focus concept is specified, every question must directly test that concept and not unrelated topics.
 - Test actual conceptual understanding, mechanisms, and application rather than trivial verbatim word-matching.`;
 
-    const response = await withTimeout(ai.models.generateContent({
-      model: PRIMARY_MODEL,
-      contents: prompt,
-      config: {
+    const response = await generateAiContent(prompt, {
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
@@ -446,8 +686,7 @@ CRITICAL INSTRUCTIONS:
           },
           required: ['quizTitle', 'questions'],
         },
-      },
-    }));
+    });
 
     const parsed = JSON.parse(response.text || '{}');
     if (typeof parsed.quizTitle !== 'string' || !parsed.quizTitle.trim() || !Array.isArray(parsed.questions) || parsed.questions.length !== count) {
@@ -504,10 +743,7 @@ STUDENT ANSWER: ${studentAnswer}
 
 Evaluate conceptual accuracy, whether required points are present, incorrect claims, omissions, and relevant reasoning. Return score 0-100; correctness must be true exactly when score >= 70. Include specific arrays of what the student understood correctly, what was missing, and what to review. Do not infer correctness from keyword overlap.`;
 
-    const response = await withTimeout(ai.models.generateContent({
-      model: PRIMARY_MODEL,
-      contents: prompt,
-      config: {
+    const response = await generateAiContent(prompt, {
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
@@ -521,8 +757,7 @@ Evaluate conceptual accuracy, whether required points are present, incorrect cla
           },
           required: ['score', 'isCorrect', 'feedback', 'understood', 'missing', 'review'],
         },
-      },
-    }));
+    });
 
     const result = JSON.parse(response.text || '{}');
     if (!Number.isInteger(result.score) || result.score < 0 || result.score > 100 || typeof result.isCorrect !== 'boolean' || result.isCorrect !== (result.score >= 70) || typeof result.feedback !== 'string' || !result.feedback.trim() || !['understood', 'missing', 'review'].every((key) => Array.isArray(result[key]) && result[key].every((item: unknown) => typeof item === 'string'))) {
@@ -564,6 +799,7 @@ app.use((error: unknown, req: Request, res: Response, next: (error?: unknown) =>
 });
 
 async function startServer() {
+  await loadAiConfiguration();
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({

@@ -197,12 +197,12 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {/* Quick Study Lab Launcher */}
           <button
-            onClick={() => onTabChange('studylab')}
+            onClick={() => onTabChange('assistant')}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-cyan-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 text-white shadow-sm shadow-cyan-500/25 transition-all active:scale-95"
           >
             <Play className="w-3.5 h-3.5 fill-current" />
-            <span className="hidden sm:inline">Study Lab</span>
-            <span className="sm:hidden">Study</span>
+            <span className="hidden sm:inline">AI Assistant</span>
+            <span className="sm:hidden">AI</span>
           </button>
 
           {/* Data Manager (Load sample vs Fresh) */}

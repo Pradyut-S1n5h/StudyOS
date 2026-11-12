@@ -68,7 +68,7 @@ $$\text{STUDY MATERIAL} \longrightarrow \text{UNDERSTANDING} \longrightarrow \te
 |---|---|
 | **Frontend** | React 19, TypeScript, Vite, Tailwind CSS v4, Lucide Icons, Canvas Confetti |
 | **Backend** | Node.js, Express, tsx |
-| **AI Integration** | Google GenAI SDK (`@google/genai`), Gemini 3.8 Flash (`gemini-3.8-flash`) |
+| **AI Integration** | Google GenAI SDK (`@google/genai`), Gemini 3.8 Flash by default |
 | **Persistence** | Structured local client-side database with JSON export/import and fallback resilience |
 
 ---
@@ -77,19 +77,25 @@ $$\text{STUDY MATERIAL} \longrightarrow \text{UNDERSTANDING} \longrightarrow \te
 
 New installations start with an empty library and no study history. The data manager offers an explicit sample curriculum for demonstrations; sample quiz attempts and study sessions are not mixed into a fresh student's analytics.
 
-Without `GEMINI_API_KEY`, local library, planner, revision, persistence, and deterministic scheduling features remain available. AI-generated notes, explanations, quizzes, and short-answer grades return a clear unavailable error and are not recorded as successful operations. Grounded Q&A can refuse a question when no relevant source passage exists, but requires Gemini to compose an answer when passages are found.
+AI inference requires a valid Google AI API key. Configure it through **Settings → AI Configuration**; no source edits or direct backend file edits are needed. The key is encrypted on the server with AES-256-GCM and is not returned to the browser. A machine-level `GEMINI_API_KEY` can also be used as a bootstrap value, but the in-app settings flow is the recommended path. The configuration and encryption key are stored with owner-only permissions in `~/.studyos` by default (or `STUDYOS_DATA_DIR` if set). Back up that private directory to preserve the saved key; losing the encryption key makes the saved configuration unreadable.
+
+StudyOS has no user sign-in or account database. AI configuration is therefore shared by all users of one server instance. Do not expose a hosted instance to untrusted users without putting it behind trusted access controls. Provider usage, quota, and billing are controlled by Google and are not available through this app. If no key is configured, local library, planner, revision, persistence, and deterministic scheduling still work, while AI requests show setup guidance rather than fake responses.
+
+The AI assistant streams responses from Gemini and stores conversation history in the current browser's local storage. Notes, explanations, grounded Q&A, quiz generation, and short-answer grading use the same server-side provider configuration and generation engine.
 
 ## ⚙️ Environment Variables
 
-Copy `.env.example` to `.env`:
+Environment variables are optional for ordinary use. AI credentials are configured in the website, not in `.env`.
 
 ```bash
-# GEMINI_API_KEY: Required for Gemini AI API calls.
-# AI Studio automatically injects this at runtime from user secrets.
-GEMINI_API_KEY="your-gemini-api-key"
-
-# Port (defaults to 3000)
+# Optional, defaults to 3000
 PORT=3000
+
+# Optional bootstrap key; prefer Settings -> AI Configuration for daily use
+# GEMINI_API_KEY=your_google_ai_key_here
+
+# Optional private config directory (defaults to ~/.studyos)
+# STUDYOS_DATA_DIR=/path/to/private/studyos-data
 ```
 
 ---
@@ -114,4 +120,4 @@ npm run start
 
 ## Validation
 
-Run `npm test` for deterministic storage, mastery, and planner checks, `npm run lint` for TypeScript validation, and `npm run build` for a production bundle. AI-backed workflows require a server-side `GEMINI_API_KEY`; the application does not substitute generated learning content when that service is unavailable.
+Run `npm test` for deterministic storage, mastery, and planner checks, `npm run lint` for TypeScript validation, and `npm run build` for a production bundle. AI-backed workflows require a valid Google AI API key or a configured key through the in-app AI settings; the application does not substitute generated learning content when that service is unavailable.
